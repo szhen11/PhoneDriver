@@ -528,16 +528,32 @@ def create_ui():
 
 def main():
     """Main entry point for the UI."""
+    import socket
     print("Phone Agent UI Starting...")
     print("Setting up logging...")
     setup_logging()
-    
+
     print("Creating interface...")
     demo = create_ui()
-    
-    print("Starting server on http://localhost:7860")
-    print("Press Ctrl+C to stop")
-    
+
+    # Resolve the machine's LAN IP for convenience
+    try:
+        lan_ip = socket.gethostbyname(socket.gethostname())
+    except Exception:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            lan_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            lan_ip = "<your-ip>"
+
+    print("=" * 50)
+    print(f"  Local:   http://localhost:7860")
+    print(f"  Network: http://{lan_ip}:7860")
+    print("  Press Ctrl+C to stop")
+    print("=" * 50)
+
     demo.queue()
     demo.launch(
         server_name="0.0.0.0",
