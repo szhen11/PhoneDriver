@@ -7,18 +7,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
 
+from gpt_vl_agent import GPTVLAgent
 from qwen_vl_agent import QwenVLAgent
 
 
 class PhoneAgent:
     """
-    Phone automation agent using Qwen3-VL for visual understanding and ADB for control.
-    
-    This agent:
-    - Captures screenshots from Android devices via ADB
-    - Uses Qwen3-VL to analyze screens and determine actions
-    - Executes actions through ADB commands
-    - Tracks context and action history
+    Phone automation agent supporting two vision-language backends:
+      - GPT-5.2 (Copilot / OpenAI API) — default, no local GPU required
+      - Qwen3-VL (local)               — requires a GPU with sufficient VRAM
+
+    Select the backend via config key 'model_backend': 'openai' (default) or 'qwen'.
+    Controls Android devices via ADB commands.
     """
     
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -30,17 +30,20 @@ class PhoneAgent:
         """
         # Default configuration
         default_config = {
-            'device_id': None,  # Auto-detect first device if None
-            'screen_width': 1080,  # Must match your device
-            'screen_height': 2340,  # Must match your device
+            'device_id': None,           # Auto-detect first device if None
+            'screen_width': 1080,        # Must match your device
+            'screen_height': 2340,       # Must match your device
             'screenshot_dir': './screenshots',
             'max_retries': 3,
-            'model_name': 'Qwen/Qwen3-VL-30B-A3B-Instruct',
-            'use_flash_attention': False,
+            'model_backend': 'openai',   # 'openai' (default) or 'qwen'
+            'model_name': 'qwen3-vl-235b-a22b-instruct-fp8',
+            'api_key': None,             # API key (or OPENAI_API_KEY env var)
+            'api_base': 'http://gateway.aichina.intel.com/v1',  # Intel AI gateway
+            'use_flash_attention': False, # Qwen backend only
             'temperature': 0.1,
             'max_tokens': 512,
-            'step_delay': 1.5,  # Seconds to wait after each action
-            'enable_visual_debug': False,  # Save annotated screenshots
+            'step_delay': 1.5,           # Seconds to wait after each action
+            'enable_visual_debug': False, # Save annotated screenshots
         }
         
         self.config = default_config
@@ -65,14 +68,26 @@ class PhoneAgent:
         # Check ADB connection
         self._check_adb_connection()
         
-        # Initialize Qwen3-VL agent
-        logging.info("Initializing Qwen3-VL agent...")
-        self.vl_agent = QwenVLAgent(
-            use_flash_attention=self.config.get('use_flash_attention', False),
-            temperature=self.config['temperature'],
-            max_tokens=self.config['max_tokens'],
-        )
-        logging.info("Phone agent ready")
+        # Initialize vision-language agent (backend: 'openai' or 'qwen')
+        backend = self.config.get('model_backend', 'openai')
+        if backend == 'qwen':
+            logging.info("Initializing Qwen3-VL agent (local)...")
+            self.vl_agent = QwenVLAgent(
+                model_name=self.config.get('model_name', 'Qwen/Qwen3-VL-8B-Instruct'),
+                use_flash_attention=self.config.get('use_flash_attention', False),
+                temperature=self.config['temperature'],
+                max_tokens=self.config['max_tokens'],
+            )
+        else:  # default: openai / GPT-5.2
+            logging.info("Initializing GPT-VL (OpenAI-compatible) agent...")
+            self.vl_agent = GPTVLAgent(
+                model_name=self.config.get('model_name', 'qwen3-vl-235b-a22b-instruct-fp8'),
+                api_key=self.config.get('api_key'),
+                api_base=self.config.get('api_base'),
+                temperature=self.config['temperature'],
+                max_tokens=self.config['max_tokens'],
+            )
+        logging.info(f"Phone agent ready (backend: {backend})")
     
     def _setup_logging(self):
         """Configure logging for this session."""
@@ -207,7 +222,7 @@ class PhoneAgent:
         Execute an action on the device.
         
         Args:
-            action: Action dictionary from Qwen3-VL
+            action: Action dictionary from GPT-5.2
             
         Returns:
             Result dictionary with success status
@@ -361,7 +376,7 @@ class PhoneAgent:
             # Capture screenshot
             screenshot_path = self.capture_screenshot()
             
-            # Analyze with Qwen3-VL
+            # Analyze with GPT-5.2
             action = self.vl_agent.analyze_screenshot(
                 screenshot_path,
                 user_request,

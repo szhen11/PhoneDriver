@@ -55,7 +55,10 @@ def get_default_config():
         "screen_height": 2340,
         "screenshot_dir": "./screenshots",
         "max_retries": 3,
-        "model_name": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+        "model_backend": "openai",
+        "model_name": "qwen3-vl-235b-a22b-instruct-fp8",
+        "api_key": None,
+        "api_base": "http://gateway.aichina.intel.com/v1",
         "use_flash_attention": False,
         "temperature": 0.1,
         "max_tokens": 512,
@@ -238,13 +241,21 @@ def stop_task():
     return "No task running"
 
 
-def apply_settings(screen_width, screen_height, temp, max_tok, step_delay, use_fa2, visual_debug):
+def apply_settings(model_backend, model_name, api_key, api_base,
+                   screen_width, screen_height, temp, max_tok, step_delay, use_fa2, visual_debug):
     """Apply settings changes to config."""
-    global current_config
-    
+    global current_config, agent
+
     try:
         config = current_config or load_config()
-        
+
+        old_backend = config.get('model_backend', 'openai')
+        old_model = config.get('model_name', '')
+
+        config['model_backend'] = model_backend
+        config['model_name'] = model_name.strip()
+        config['api_key'] = api_key.strip() if api_key and api_key.strip() else None
+        config['api_base'] = api_base.strip() if api_base and api_base.strip() else None
         config['screen_width'] = int(screen_width)
         config['screen_height'] = int(screen_height)
         config['temperature'] = float(temp)
@@ -252,13 +263,18 @@ def apply_settings(screen_width, screen_height, temp, max_tok, step_delay, use_f
         config['step_delay'] = float(step_delay)
         config['use_flash_attention'] = use_fa2
         config['enable_visual_debug'] = visual_debug
-        
+
+        # Reset agent so next task re-initializes with the new backend/model
+        if old_backend != model_backend or old_model != model_name.strip():
+            agent = None
+            logging.info("Model backend/name changed – agent will be re-initialized on next task")
+
         if save_config(config):
             current_config = config
             return "✓ Settings saved", json.dumps(config, indent=2)
         else:
             return "✗ Failed to save settings", json.dumps(config, indent=2)
-            
+
     except ValueError as e:
         return f"✗ Invalid value: {e}", json.dumps(current_config or {}, indent=2)
 
@@ -289,7 +305,7 @@ def create_ui():
     
     with gr.Blocks(title="Phone Agent Control Panel", theme=gr.themes.Soft()) as demo:
         gr.Markdown("# 📱 Phone Agent Control Panel")
-        gr.Markdown("*Powered by Qwen3-VL-30B for mobile GUI automation*")
+        gr.Markdown("*Supports GPT-5.2 / Copilot (OpenAI API, default) and Qwen3-VL (local) for mobile GUI automation*")
         
         with gr.Tabs():
             with gr.Tab("🎯 Task Control"):
@@ -350,6 +366,36 @@ def create_ui():
                             value=current_config['screen_height']
                         )
                 
+                gr.Markdown("### Model Backend")
+
+                with gr.Row():
+                    model_backend_input = gr.Radio(
+                        label="Backend",
+                        choices=["openai", "qwen"],
+                        value=current_config.get('model_backend', 'openai'),
+                        info="openai = GPT-5.2 via API (default, no GPU);  qwen = local Qwen3-VL (GPU required)"
+                    )
+
+                with gr.Row():
+                    model_name_input = gr.Textbox(
+                        label="Model Name",
+                        value=current_config.get('model_name', 'qwen3-vl-235b-a22b-instruct-fp8'),
+                        placeholder="qwen3-vl-235b-a22b-instruct-fp8  or  Qwen/Qwen3-VL-8B-Instruct"
+                    )
+
+                with gr.Row():
+                    api_key_input = gr.Textbox(
+                        label="API Key (OpenAI backend only)",
+                        value=current_config.get('api_key') or '',
+                        placeholder="Leave blank if the endpoint does not require a key",
+                        type="password"
+                    )
+                    api_base_input = gr.Textbox(
+                        label="API Base URL (OpenAI backend only)",
+                        value=current_config.get('api_base') or 'http://gateway.aichina.intel.com/v1',
+                        placeholder="http://gateway.aichina.intel.com/v1"
+                    )
+
                 gr.Markdown("### Model Parameters")
                 
                 with gr.Row():
@@ -380,7 +426,7 @@ def create_ui():
                 
                 with gr.Row():
                     use_flash_attn = gr.Checkbox(
-                        label="Use Flash Attention 2",
+                        label="Use Flash Attention 2 (Qwen backend only)",
                         value=current_config.get('use_flash_attention', False)
                     )
                     visual_debug = gr.Checkbox(
@@ -404,8 +450,13 @@ def create_ui():
 ## Quick Start
 
 1. **Connect Device**: USB debugging enabled, device connected
-2. **Configure Resolution**: Use auto-detect in Settings tab
-3. **Run Task**: Enter task description and click Start
+2. **Select Backend**: Choose OpenAI (default, no GPU) or Qwen3-VL (local GPU) in the Settings tab
+3. **Configure Resolution**: Use auto-detect in Settings tab
+4. **Run Task**: Enter task description and click Start
+
+## Model Backends
+- **openai** (default): Uses GPT-5.2 via the OpenAI / Copilot API. Set `OPENAI_API_KEY` env var or enter it in Settings.
+- **qwen**: Runs Qwen3-VL locally. Requires a GPU; set Model Name to e.g. `Qwen/Qwen3-VL-8B-Instruct`.
 
 ## Task Examples
 - "Open Chrome"
@@ -415,7 +466,9 @@ def create_ui():
 ## Troubleshooting
 - **Wrong taps**: Check screen resolution in Settings
 - **No device**: Run `adb devices` in terminal
-- **Errors**: Check the Execution Log tab
+- **API errors**: Verify API key / base URL in Settings
+- **Qwen OOM**: Use a smaller model (4B) or reduce `max_tokens`
+- **Errors**: Check the Execution Log
                 """)
         
         timer = gr.Timer(value=3, active=False)
@@ -455,6 +508,10 @@ def create_ui():
         apply_btn.click(
             fn=apply_settings,
             inputs=[
+                model_backend_input,
+                model_name_input,
+                api_key_input,
+                api_base_input,
                 screen_width,
                 screen_height,
                 temperature,
